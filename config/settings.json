@@ -1,0 +1,11 @@
+{
+  "x_flare_threshold": "X1",
+  "high_solar_wind": 800,
+  "extreme_solar_wind": 1000,
+  "high_negative_bz": -10,
+  "extreme_negative_bz": -20,
+  "kp_warning": 7,
+  "kp_extreme": 8,
+  "poll_interval_minutes": 15,
+  "enable_debug": false
+}
