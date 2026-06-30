@@ -1,161 +1,168 @@
-"""CarringtonWatch Bot — Application entry point.
+#!/usr/bin/env python3
+"""
+CarringtonWatch Serverless Bot
 
-Wires all components together, verifies connectivity, and starts the
-scheduled polling loop via python-telegram-bot's Application event loop.
+Designed for serverless execution (GitHub Actions cron).
+Runs one data collection → analysis → notification cycle and exits.
+Stores minimal state as JSON in repository.
 """
 
-from __future__ import annotations
-
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
-
-from telegram.error import TelegramError
-from telegram.ext import Application
+from typing import Dict, Any, Optional
 
 from src.analyzer import RiskAnalyzer
 from src.collector import NOAACollector
 from src.config import load_config, validate_config
-from src.notifier import TelegramNotifier, register_commands
-from src.scheduler import PollOrchestrator
-from src.state import StateManager
+from src.notifier import TelegramNotifier
+from src.state import SentAlertState
+from telegram.ext import Application
 
-# Project root directory
-PROJECT_ROOT = Path(__file__).resolve().parent
-STATE_DIR = PROJECT_ROOT / "state"
-LOG_DIR = PROJECT_ROOT / "logs"
-LOG_FILE = LOG_DIR / "bot.log"
+
+# Minimal state file for serverless execution
+STATE_FILE = Path("bot_state.json")
+
+
+def load_minimal_state() -> Optional[SentAlertState]:
+    """Load minimal state needed for alert suppression."""
+    if not STATE_FILE.exists():
+        return None
+    
+    try:
+        with open(STATE_FILE, 'r') as f:
+            data = json.load(f)
+            return SentAlertState(
+                last_status=data.get("last_status"),
+                last_score=data.get("last_score"), 
+                last_event_id=data.get("last_event_id")
+            )
+    except (json.JSONDecodeError, KeyError, FileNotFoundError):
+        return None
+
+
+def save_minimal_state(alert_state: SentAlertState) -> None:
+    """Save minimal state for next run."""
+    data = {
+        "last_status": alert_state.last_status,
+        "last_score": alert_state.last_score,
+        "last_event_id": alert_state.last_event_id,
+        "updated_at": "auto-updated by GitHub Actions"
+    }
+    
+    with open(STATE_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 
 def setup_logging(enable_debug: bool) -> None:
-    """Configure logging to file and console with structured format."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
+    """Configure logging for serverless execution."""
     log_level = logging.DEBUG if enable_debug else logging.INFO
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     logging.basicConfig(
         level=log_level,
         format=log_format,
-        handlers=[
-            logging.FileHandler(LOG_FILE),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
 
-async def verify_telegram_connectivity(application: Application, chat_id: str) -> bool:
-    """Send a test message to verify Telegram API connectivity.
-
-    Returns True on success, False on failure.
-    """
+async def run_single_poll_cycle() -> None:
+    """Run a single poll cycle: collect → analyze → notify → exit."""
     logger = logging.getLogger(__name__)
+
     try:
-        await application.bot.send_message(
-            chat_id=chat_id,
-            text="🛰️ CarringtonWatch Bot starting up — connectivity verified.",
-        )
-        logger.info("Telegram connectivity verified")
-        return True
-    except TelegramError as e:
-        logger.error("Telegram connectivity test failed: %s", e)
-        return False
+        logger.info("🛰️ CarringtonWatch: Starting serverless poll cycle")
 
-
-async def run_bot() -> None:
-    """Main async entry point: initialize and run the bot."""
-    logger = logging.getLogger(__name__)
-
-    # ── 1. Load and validate configuration ───────────────────────────────
-    config = load_config()
-    errors = validate_config(config)
-    if errors:
-        # Set up minimal logging so the error is visible
-        setup_logging(config.enable_debug)
-        for error in errors:
-            logger.error("Configuration error: %s", error)
-        logger.error("Bot cannot start due to configuration errors. Exiting.")
-        sys.exit(1)
-
-    # ── 2. Configure logging ─────────────────────────────────────────────
-    setup_logging(config.enable_debug)
-
-    # ── 3. Initialize state manager ──────────────────────────────────────
-    state_manager = StateManager(STATE_DIR)
-    state_manager.ensure_state_files()
-    logger.info("State files initialized in %s", STATE_DIR)
-
-    # ── 4. Build python-telegram-bot Application ─────────────────────────
-    application = Application.builder().token(config.telegram_bot_token).build()
-
-    # ── 5. Create components ─────────────────────────────────────────────
-    collector = NOAACollector()
-    analyzer = RiskAnalyzer(config)
-    notifier = TelegramNotifier(bot=application.bot, chat_id=config.telegram_chat_id)
-    orchestrator = PollOrchestrator(
-        collector=collector,
-        analyzer=analyzer,
-        notifier=notifier,
-        state_manager=state_manager,
-    )
-
-    # ── 6. Verify Telegram connectivity ──────────────────────────────────
-    async with application:
-        connected = await verify_telegram_connectivity(
-            application, config.telegram_chat_id
-        )
-        if not connected:
-            logger.error(
-                "Failed to connect to Telegram. Check TELEGRAM_BOT_TOKEN and "
-                "TELEGRAM_CHAT_ID. Exiting."
-            )
+        # ── 1. Load and validate configuration ───────────────────────────
+        config = load_config()
+        errors = validate_config(config)
+        if errors:
+            for error in errors:
+                logger.error("Configuration error: %s", error)
+            logger.error("Cannot start due to configuration errors")
             sys.exit(1)
 
-        # ── 7. Register command handlers ─────────────────────────────────
-        register_commands(application, notifier, state_manager, analyzer)
-        logger.info("Command handlers registered")
+        # ── 2. Configure logging ─────────────────────────────────────────
+        setup_logging(config.enable_debug)
 
-        # ── 8. Schedule periodic poll ────────────────────────────────────
-        interval_seconds = config.poll_interval_minutes * 60
-        application.job_queue.run_repeating(
-            orchestrator.execute_poll_cycle,
-            interval=interval_seconds,
-            first=interval_seconds,
-            name="poll_cycle",
-        )
-        logger.info(
-            "Scheduled polling every %d minutes", config.poll_interval_minutes
+        # ── 3. Initialize components ─────────────────────────────────────
+        collector = NOAACollector()
+        analyzer = RiskAnalyzer(config)
+
+        # ── 4. Setup Telegram bot ───────────────────────────────────────
+        application = Application.builder().token(config.telegram_bot_token).build()
+        notifier = TelegramNotifier(
+            bot=application.bot, 
+            chat_id=config.telegram_chat_id
         )
 
-        # ── 9. Run one immediate poll cycle ──────────────────────────────
-        logger.info("Running initial poll cycle")
-        await orchestrator.execute_poll_cycle(context=None)
+        # ── 5. Execute single poll cycle ────────────────────────────────
+        async with application:
+            logger.info("Collecting NOAA space weather data")
+            data = collector.collect()
 
-        # ── 10. Log success and start event loop ─────────────────────────
-        logger.info("Bot initialized successfully")
+            logger.info("Computing risk assessment")
+            assessment = analyzer.assess(data)
 
-        await application.start()
-        await application.updater.start_polling()
+            logger.info(
+                "Risk computed: level=%s, score=%d", 
+                assessment.level.value, 
+                assessment.score
+            )
 
-        # Keep running until interrupted
-        try:
-            await asyncio.Event().wait()
-        except (KeyboardInterrupt, SystemExit):
-            pass
-        finally:
-            await application.updater.stop()
-            await application.stop()
+            # Load previous alert state for suppression logic
+            previous_state = load_minimal_state()
+            if previous_state is None:
+                logger.info("No previous state found - first run")
+                previous_state = SentAlertState(None, None, None)
+
+            # Check if alert should be sent
+            should_send = analyzer.should_alert(assessment, previous_state)
+
+            if should_send:
+                logger.info("Sending alert notification")
+                sent = await notifier.send_alert(assessment)
+                if sent:
+                    logger.info("✅ Alert sent successfully")
+                    # Save new alert state
+                    new_alert_state = SentAlertState(
+                        last_status=assessment.level.value,
+                        last_score=assessment.score,
+                        last_event_id=f"{assessment.data.timestamp}-{assessment.data.xray_flare or ''}",
+                    )
+                    save_minimal_state(new_alert_state)
+                    logger.info("State updated for next run")
+                else:
+                    logger.error("❌ Failed to send alert")
+                    sys.exit(1)
+            else:
+                logger.info("🔇 Alert suppressed: no meaningful change detected")
+
+            logger.info(
+                "✅ CarringtonWatch serverless cycle completed: risk_score=%d, level=%s",
+                assessment.score,
+                assessment.level.value,
+            )
+
+    except Exception as e:
+        logger.exception("❌ Error during poll cycle: %s", e)
+        sys.exit(1)
 
 
 def main() -> None:
-    """Synchronous entry point."""
+    """Entry point for serverless execution."""
     try:
-        asyncio.run(run_bot())
+        asyncio.run(run_single_poll_cycle())
     except KeyboardInterrupt:
-        pass
+        print("\n🛑 CarringtonWatch cycle interrupted")
+        sys.exit(1)
     except SystemExit:
         raise
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

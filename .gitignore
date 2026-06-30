@@ -52,9 +52,9 @@ coverage.xml
 *~
 .DS_Store
 
-# Logs and runtime data
-logs/*.log
-state/*.json
+# Local logs and runtime data (serverless uses bot_state.json)
+logs/
+state/
 *.log
 
 # Temporary files
@@ -70,3 +70,6 @@ Thumbs.db
 .Spotlight-V100
 .Trashes
 ehthumbs.db
+
+# Legacy/backup files
+main_old.py
