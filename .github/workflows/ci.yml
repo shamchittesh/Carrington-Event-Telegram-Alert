@@ -34,6 +34,8 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write  # Allow pushing commits back to repository
 
     steps:
     - uses: actions/checkout@v4
