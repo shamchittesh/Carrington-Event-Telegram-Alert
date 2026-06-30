@@ -1,6 +1,6 @@
 {
-  "last_status": null,
-  "last_score": null,
-  "last_event_id": null,
-  "updated_at": "Initial state - never sent an alert"
+  "last_status": "NORMAL",
+  "last_score": 0,
+  "last_event_id": "2026-06-30T06:55:18Z-",
+  "updated_at": "auto-updated by GitHub Actions"
 }
