@@ -88,16 +88,34 @@ class TelegramNotifier:
         """Build the full alert message for a given risk assessment."""
         emoji = LEVEL_EMOJI[assessment.level]
         header = LEVEL_HEADER[assessment.level]
+        data = assessment.data
 
         lines: list[str] = []
         lines.append(f"{emoji} {header}")
         lines.append("")
         lines.append(f"Risk Score: {assessment.score}/100")
 
+        # Add current measurements section
+        lines.append("")
+        lines.append("📊 Current Measurements:")
+        lines.append(f"  🌞 X-Ray Flare: {data.xray_flare or 'None detected'}")
+        lines.append(
+            f"  💨 Solar Wind: "
+            f"{f'{data.solar_wind_speed:.0f} km/s' if data.solar_wind_speed is not None else 'N/A'}"
+        )
+        lines.append(
+            f"  🧲 Bz Component: "
+            f"{f'{data.bz_component:.1f} nT' if data.bz_component is not None else 'N/A'}"
+        )
+        lines.append(
+            f"  📈 Kp Index: "
+            f"{f'{data.kp_index:.1f}' if data.kp_index is not None else 'N/A'}"
+        )
+
         # Include contributing factors at WATCH level and higher
         if assessment.level in (RiskLevel.WATCH, RiskLevel.WARNING, RiskLevel.EXTREME):
             lines.append("")
-            lines.append("Contributing Factors:")
+            lines.append("⚠️ Contributing Factors:")
             for factor in assessment.contributing_factors:
                 lines.append(f"  • {factor}")
 
@@ -105,6 +123,10 @@ class TelegramNotifier:
         if assessment.level == RiskLevel.EXTREME:
             lines.append("")
             lines.append(CARRINGTON_DISCLAIMER)
+
+        # Add timestamp
+        lines.append("")
+        lines.append(f"🕐 Data Time: {data.timestamp}")
 
         return "\n".join(lines)
 
